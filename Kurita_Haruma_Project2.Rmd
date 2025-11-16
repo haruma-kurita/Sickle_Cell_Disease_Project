@@ -1,0 +1,202 @@
+---
+title: "Kurita_Haruma_Project2"
+author: "Haruma Kurita"
+date: "`r Sys.Date()`"
+output: word_document
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+
+# Load required libraries
+library(tidyverse)
+library(lubridate)
+library(knitr)
+```
+
+## Github Repository
+Link to GitHub: https://github.com/haruma-kurita/Sickle_Cell_Disease_Project
+
+## Background
+
+Sickle cell disease (SCD) is a group of genetic disorders in which red blood cells contort into a sickle shape. This analysis examines the associations between various air pollutants (CO, PM2.5, and O3) and potential impacts on SCD patients in Durham County, North Carolina. Air pollution data were obtained from the EPA monitoring station at RDU airport for the years 2018-2020.
+
+## Data Processing
+
+```{r function}
+# Function to process air quality data
+process_air_quality <- function(filepath) {
+  
+  # Read the CSV file
+  data <- read_csv(filepath, show_col_types = FALSE)
+  
+  # Rename columns to more appropriate variable names
+  data <- data %>%
+    rename(
+      date = Date,
+      co_conc = `Daily Max 8-hour CO Concentration`,
+      pm25_conc = `Daily Mean PM2.5 Concentration`,
+      o3_conc = `Daily Max 8-hour Ozone Concentration`
+    ) %>%
+    select(date, co_conc, pm25_conc, o3_conc)
+  
+  # Format the date variable correctly
+  data <- data %>%
+    mutate(date = mdy(date))
+  
+  # Loop through pollutants and set negative values to zero
+  pollutants <- c("co_conc", "pm25_conc", "o3_conc")
+  
+  for (pollutant in pollutants) {
+    data[[pollutant]] <- ifelse(data[[pollutant]] < 0 | is.na(data[[pollutant]]), 
+                                 0, 
+                                 data[[pollutant]])
+  }
+  
+  # Calculate daily averages for days with multiple measurements and remove duplicates
+  data <- data %>%
+    group_by(date) %>%
+    summarize(
+      co_conc = mean(co_conc, na.rm = TRUE),
+      pm25_conc = mean(pm25_conc, na.rm = TRUE),
+      o3_conc = mean(o3_conc, na.rm = TRUE)
+    ) %>%
+    ungroup()
+  
+  return(data)
+}
+```
+
+```{r process-data}
+# Process all three datasets
+aq_2018 <- process_air_quality("AQ_2018.csv")
+aq_2019 <- process_air_quality("AQ_2019.csv")
+aq_2020 <- process_air_quality("AQ_2020.csv")
+
+# Combine all years into one dataset
+aq_combined <- bind_rows(
+  mutate(aq_2018, year = 2018),
+  mutate(aq_2019, year = 2019),
+  mutate(aq_2020, year = 2020)
+)
+
+# Add month variable for plotting
+aq_combined <- aq_combined %>%
+  mutate(month = month(date, label = TRUE, abbr = TRUE))
+```
+
+## Results
+
+### Summary Statistics
+
+```{r summary-table}
+# Create summary statistics table
+summary_stats <- aq_combined %>%
+  summarize(
+    `Mean CO (ppm)` = round(mean(co_conc, na.rm = TRUE), 3),
+    `Mean PM2.5 (μg/m³)` = round(mean(pm25_conc, na.rm = TRUE), 2),
+    `Mean O3 (ppm)` = round(mean(o3_conc, na.rm = TRUE), 3),
+    `Max CO (ppm)` = round(max(co_conc, na.rm = TRUE), 3),
+    `Max PM2.5 (μg/m³)` = round(max(pm25_conc, na.rm = TRUE), 2),
+    `Max O3 (ppm)` = round(max(o3_conc, na.rm = TRUE), 3)
+  )
+
+kable(summary_stats, caption = "Summary Statistics for Air Pollutants (2018-2020)")
+```
+
+### Plot 1: Monthly Average CO and O3 Concentrations
+
+```{r plot1, fig.width=10, fig.height=6}
+# Calculate monthly averages across all years with 95% CI
+monthly_co_o3 <- aq_combined %>%
+  group_by(month) %>%
+  summarize(
+    co_mean = mean(co_conc, na.rm = TRUE),
+    co_se = sd(co_conc, na.rm = TRUE) / sqrt(n()),
+    co_ci = 1.96 * co_se,
+    o3_mean = mean(o3_conc, na.rm = TRUE),
+    o3_se = sd(o3_conc, na.rm = TRUE) / sqrt(n()),
+    o3_ci = 1.96 * o3_se
+  )
+
+# Scaling factor to bring O3 to similar scale as CO
+scale_factor <- 10
+
+# Create the plot with dual y-axis
+ggplot(monthly_co_o3, aes(x = month)) +
+  # CO data
+  geom_line(aes(y = co_mean, color = "CO", group = 1), linewidth = 1.2) +
+  geom_point(aes(y = co_mean, color = "CO"), size = 3.5) +
+  geom_errorbar(aes(ymin = co_mean - co_ci, ymax = co_mean + co_ci, color = "CO"), 
+                width = 0.3, linewidth = 0.9) +
+  # O3 data (scaled)
+  geom_line(aes(y = o3_mean * scale_factor, color = "O3", group = 1), linewidth = 1.2) +
+  geom_point(aes(y = o3_mean * scale_factor, color = "O3"), size = 3.5) +
+  geom_errorbar(aes(ymin = (o3_mean - o3_ci) * scale_factor, 
+                    ymax = (o3_mean + o3_ci) * scale_factor, color = "O3"), 
+                width = 0.3, linewidth = 0.9) +
+  # Scales
+  scale_y_continuous(
+    name = "CO Concentration (ppm)",
+    sec.axis = sec_axis(~./scale_factor, name = "O3 Concentration (ppm)")
+  ) +
+  scale_color_manual(
+    values = c("CO" = "#E69F00", "O3" = "#56B4E9"),
+    name = "Pollutant"
+  ) +
+  labs(
+    title = "Monthly Average CO and O3 Concentrations (2018-2020)",
+    subtitle = "Error bars represent 95% confidence intervals",
+    x = "Month"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold", size = 14),
+    legend.position = "bottom",
+    panel.grid.minor = element_blank(),
+    axis.title.y.left = element_text(color = "#E69F00", face = "bold"),
+    axis.title.y.right = element_text(color = "#56B4E9", face = "bold"),
+    axis.text.y.left = element_text(color = "#E69F00"),
+    axis.text.y.right = element_text(color = "#56B4E9")
+  )
+```
+
+The CO and O3 concentrations show distinct seasonal patterns. CO concentrations are relatively stable throughout the year with slightly higher values in winter months. O3 concentrations peak during summer months (June-August), consistent with increased photochemical activity in warmer weather. The dual y-axis allows for clear visualization of the 95% confidence intervals for both pollutants despite their different scales.
+
+### Plot 2: Monthly PM2.5 Concentrations by Year
+
+```{r plot2, fig.width=10, fig.height=6}
+# Calculate monthly averages by year
+monthly_pm25 <- aq_combined %>%
+  group_by(year, month) %>%
+  summarize(
+    pm25_mean = mean(pm25_conc, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Create the plot
+ggplot(monthly_pm25, aes(x = month, y = pm25_mean, fill = factor(year), group = year)) +
+  geom_col(position = position_dodge(width = 0.8), width = 0.7, alpha = 0.85) +
+  scale_fill_manual(
+    values = c("2018" = "#D55E00", "2019" = "#009E73", "2020" = "#0072B2"),
+    name = "Year"
+  ) +
+  labs(
+    title = "Monthly Average PM2.5 Concentrations by Year",
+    subtitle = "Comparing patterns across 2018-2020 (2020 data through April only)",
+    x = "Month",
+    y = "PM2.5 Concentration (μg/m³)"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold", size = 14),
+    legend.position = "bottom",
+    panel.grid.minor = element_blank(),
+    panel.grid.major.x = element_blank()
+  )
+```
+
+PM2.5 concentrations show variability across months and years. Generally, concentrations tend to be higher in winter and spring months. The 2020 data (available only through April) shows relatively lower PM2.5 levels compared to the same months in 2018 and 2019, which may reflect reduced human activity during the early COVID-19 pandemic period.
+
+## Conclusions
+
+This analysis processed air quality data from 2018-2020 and revealed seasonal patterns in pollutant concentrations. O3 shows clear summer peaks, while CO remains relatively stable year-round. PM2.5 exhibits more variable patterns with generally higher concentrations in cooler months. These findings provide a foundation for understanding potential air quality impacts on sickle cell disease patients in Durham County. Further analysis would be needed to directly correlate these pollutant levels with health outcomes in SCD patients.
